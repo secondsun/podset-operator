@@ -119,30 +119,62 @@ func (r *ReconcilePodSet) Reconcile(request reconcile.Request) (reconcile.Result
 	}
 
 	if len(podList.Items) == podCount {
+
+		var keepNames []string
+		for _, pod := range podList.Items {
+			keepNames = append(keepNames, pod.Name)
+		}
+
+		instance.Status.PodNames = keepNames
+		err = r.client.Update(context.TODO(), instance)
+		if err != nil {
+			log.Printf("Error Appending updating podset\n")
+			return reconcile.Result{}, err
+		}
+
 		log.Printf("Pods all found\n")
 		return reconcile.Result{}, nil
 	}
 
-	for createCount := podCount - len(podList.Items); createCount > 0; createCount-- {
-		// Define a new Pod object
-		pod := newPodForCR(instance)
+	if len(podList.Items) < podCount {
 
-		// Set PodSet instance as the owner and controller
-		if err := controllerutil.SetControllerReference(instance, pod, r.scheme); err != nil {
-			return reconcile.Result{}, err
+		for createCount := podCount - len(podList.Items); createCount > 0; createCount-- {
+			// Define a new Pod object
+			pod := newPodForCR(instance)
+
+			// Set PodSet instance as the owner and controller
+			if err := controllerutil.SetControllerReference(instance, pod, r.scheme); err != nil {
+				return reconcile.Result{}, err
+			}
+
+			log.Printf("Creating a new Pod %s/%s\n", pod.Namespace, pod.Name)
+			err = r.client.Create(context.TODO(), pod)
+			if err == nil {
+				log.Printf("Created pod, appending pod name to podset/%s\n", pod.Name)
+			} else {
+				log.Printf("Error Creating/%s\n", pod.Name)
+				return reconcile.Result{}, err
+			}
+
+			// Pod created successfully - don't requeue
+
 		}
+	}
+	if len(podList.Items) > podCount {
+		log.Printf("Deleting extra pods")
+		for deleteCount := len(podList.Items) - podCount; deleteCount > 0; deleteCount-- {
+			pod := podList.Items[0]
+			podList.Items = podList.Items[1:]
 
-		log.Printf("Creating a new Pod %s/%s\n", pod.Namespace, pod.Name)
-		err = r.client.Create(context.TODO(), pod)
-		if err == nil {
-			log.Printf("Created pod, appending pod name to podset/%s\n", pod.Name)
-		} else {
-			log.Printf("Error Creating/%s\n", pod.Name)
-			return reconcile.Result{}, err
+			deletePod := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      pod.Name,
+					Namespace: pod.Namespace,
+				},
+			}
+
+			r.client.Delete(context.TODO(), deletePod)
 		}
-
-		// Pod created successfully - don't requeue
-
 	}
 
 	err = r.client.List(context.TODO(), listOpts, podList)
