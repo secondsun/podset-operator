@@ -2,6 +2,7 @@ package podset
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"math/rand"
 	"strconv"
@@ -12,7 +13,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -100,30 +100,30 @@ func (r *ReconcilePodSet) Reconcile(request reconcile.Request) (reconcile.Result
 	}
 
 	podCount := instance.Spec.Replicas
-	podNames := instance.Status.PodNames
-	var removeNames []string
-	var keepNames []string
-	for _, podName := range podNames {
-		pod := newPodForCR(instance)
-		pod.Name = podName
-		// Check if this Pod already exists
-		found := &corev1.Pod{}
-		err = r.client.Get(context.TODO(), types.NamespacedName{Name: pod.Name, Namespace: pod.Namespace}, found)
-		if err != nil && errors.IsNotFound(err) {
-			log.Printf("Pod %s has been removed. Updating removeNames\n", pod.Name)
-			removeNames = append(removeNames, podName)
-		} else if err == nil {
-			log.Printf("Pod %s exists. Updating keepNames\n", pod.Name)
-			keepNames = append(keepNames, podName)
-		}
+	podList := &corev1.PodList{}
+
+	listOpts := &client.ListOptions{}
+	listOpts.SetLabelSelector(fmt.Sprintf("app=%s", instance.Name))
+	listOpts.InNamespace(instance.Namespace)
+
+	err = r.client.List(context.TODO(), listOpts, podList)
+
+	log.Printf("Found pods %d\n", len(podList.Items))
+
+	log.Printf("Namespace %s\n", instance.Namespace)
+	log.Printf("Name %s\n", instance.Name)
+
+	if err != nil {
+		log.Printf("Error Listing Pods\n")
+		return reconcile.Result{}, err
 	}
 
-	if len(keepNames) == podCount {
+	if len(podList.Items) == podCount {
 		log.Printf("Pods all found\n")
 		return reconcile.Result{}, nil
 	}
 
-	for createCount := podCount - len(keepNames); createCount > 0; createCount-- {
+	for createCount := podCount - len(podList.Items); createCount > 0; createCount-- {
 		// Define a new Pod object
 		pod := newPodForCR(instance)
 
@@ -136,7 +136,6 @@ func (r *ReconcilePodSet) Reconcile(request reconcile.Request) (reconcile.Result
 		err = r.client.Create(context.TODO(), pod)
 		if err == nil {
 			log.Printf("Created pod, appending pod name to podset/%s\n", pod.Name)
-			keepNames = append(keepNames, pod.Name)
 		} else {
 			log.Printf("Error Creating/%s\n", pod.Name)
 			return reconcile.Result{}, err
@@ -144,6 +143,18 @@ func (r *ReconcilePodSet) Reconcile(request reconcile.Request) (reconcile.Result
 
 		// Pod created successfully - don't requeue
 
+	}
+
+	err = r.client.List(context.TODO(), listOpts, podList)
+
+	if err != nil {
+		log.Printf("Error Listing Pods\n")
+		return reconcile.Result{}, err
+	}
+
+	var keepNames []string
+	for _, pod := range podList.Items {
+		keepNames = append(keepNames, pod.Name)
 	}
 
 	instance.Status.PodNames = keepNames
