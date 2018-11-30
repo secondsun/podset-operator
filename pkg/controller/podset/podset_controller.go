@@ -118,6 +118,14 @@ func (r *ReconcilePodSet) Reconcile(request reconcile.Request) (reconcile.Result
 		return reconcile.Result{}, err
 	}
 
+	podList.Items = filterPods(podList, func(pod corev1.Pod) bool {
+		return pod.Status.Phase == corev1.PodPending || pod.Status.Phase == corev1.PodRunning
+	})
+
+	podList.Items = filterPods(podList, func(pod corev1.Pod) bool {
+		return pod.ObjectMeta.DeletionTimestamp == nil
+	})
+
 	if len(podList.Items) == podCount {
 
 		var keepNames []string
@@ -198,6 +206,15 @@ func (r *ReconcilePodSet) Reconcile(request reconcile.Request) (reconcile.Result
 	log.Printf("Updated podset/%s\n", instance.Name)
 	// Pod already exists - don't requeue
 	return reconcile.Result{}, nil
+}
+
+func filterPods(podList *corev1.PodList, test func(pod corev1.Pod) bool) (ret []corev1.Pod) {
+	for _, pod := range podList.Items {
+		if test(pod) {
+			ret = append(ret, pod)
+		}
+	}
+	return
 }
 
 // newPodForCR returns a busybox pod with the same name/namespace as the cr
